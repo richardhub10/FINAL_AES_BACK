@@ -243,7 +243,13 @@ STATIC_ROOT = BASE_DIR / 'staticfiles'
 
 # WhiteNoise will serve collected static files when DEBUG=False.
 if not DEBUG:
-    STATICFILES_STORAGE = 'whitenoise.storage.CompressedManifestStaticFilesStorage'
+    # Manifest storage is stricter and can raise 500s if collectstatic wasn't run
+    # (common misconfig on new deploy platforms). CompressedStaticFilesStorage
+    # is more forgiving while still producing gzip/brotli variants.
+    STATICFILES_STORAGE = 'whitenoise.storage.CompressedStaticFilesStorage'
+    # As a safety net, allow serving via Django's staticfiles finders.
+    # (You should still run collectstatic for best performance.)
+    WHITENOISE_USE_FINDERS = True
 
 # Default primary key field type
 # https://docs.djangoproject.com/en/4.2/ref/settings/#default-auto-field

@@ -14,11 +14,13 @@ Appointments contain sensitive fields (reason/notes). Those fields are:
 """
 
 from django.contrib.auth import get_user_model
+from datetime import datetime, timedelta
 
 from rest_framework import mixins, permissions, viewsets
 from rest_framework.decorators import action
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.response import Response
+from django.utils import timezone
 
 from .models import Appointment
 from .serializers import AppointmentSerializer, RegisterSerializer, StaffUserSerializer
@@ -55,6 +57,74 @@ def me(request):
 			"is_staff": user.is_staff,
 		}
 	)
+
+
+@api_view(["GET"])
+@permission_classes([permissions.IsAuthenticated])
+def availability(request):
+	"""Return global confirmed-slot counts for a date range.
+
+	Purpose:
+	- Students only have permission to list *their own* appointments.
+	- Availability, however, must reflect *all* confirmed appointments so a new
+	  student sees accurate used/total per time slot.
+
+	This endpoint returns only aggregated counts (no patient details).
+
+	Query params:
+	- start: YYYY-MM-DD (inclusive)
+	- end:   YYYY-MM-DD (inclusive)
+
+	Response:
+	{
+	  "confirmed_by_date": {"2026-04-11": 3, ...},
+	  "confirmed_by_slot": {"2026-04-11 07:00": 2, ...}
+	}
+	"""
+	start_ymd = (request.query_params.get("start") or "").strip()
+	end_ymd = (request.query_params.get("end") or "").strip()
+
+	if not start_ymd or not end_ymd:
+		return Response({"detail": "Query params 'start' and 'end' are required (YYYY-MM-DD)."}, status=400)
+
+	try:
+		start_date = datetime.strptime(start_ymd, "%Y-%m-%d").date()
+		end_date = datetime.strptime(end_ymd, "%Y-%m-%d").date()
+	except ValueError:
+		return Response({"detail": "Invalid date format. Use YYYY-MM-DD."}, status=400)
+
+	if end_date < start_date:
+		return Response({"detail": "'end' must be on or after 'start'."}, status=400)
+
+	# Use UTC boundaries since the app schedules/validates in UTC.
+	start_dt = timezone.make_aware(datetime.combine(start_date, datetime.min.time()), timezone=timezone.utc)
+	end_dt_exclusive = timezone.make_aware(
+		datetime.combine(end_date + timedelta(days=1), datetime.min.time()),
+		timezone=timezone.utc,
+	)
+
+	qs = Appointment.objects.filter(
+		status=Appointment.Status.CONFIRMED,
+		scheduled_for__gte=start_dt,
+		scheduled_for__lt=end_dt_exclusive,
+	).only("scheduled_for")
+
+	confirmed_by_date = {}
+	confirmed_by_slot = {}
+	for scheduled_for in qs.values_list("scheduled_for", flat=True):
+		if not scheduled_for:
+			continue
+		dt_utc = scheduled_for
+		if timezone.is_naive(dt_utc):
+			dt_utc = timezone.make_aware(dt_utc, timezone=timezone.utc)
+		dt_utc = dt_utc.astimezone(timezone.utc)
+		ymd = dt_utc.strftime("%Y-%m-%d")
+		hhmm = dt_utc.strftime("%H:%M")
+		slot_key = f"{ymd} {hhmm}"
+		confirmed_by_date[ymd] = int(confirmed_by_date.get(ymd, 0)) + 1
+		confirmed_by_slot[slot_key] = int(confirmed_by_slot.get(slot_key, 0)) + 1
+
+	return Response({"confirmed_by_date": confirmed_by_date, "confirmed_by_slot": confirmed_by_slot})
 
 
 class IsOwnerOrStaff(permissions.BasePermission):

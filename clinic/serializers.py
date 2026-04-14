@@ -15,6 +15,7 @@ and only to authorized users.
 from django.contrib.auth import get_user_model
 from datetime import timedelta
 from django.utils import timezone
+from zoneinfo import ZoneInfo
 from rest_framework import serializers
 
 from .crypto import encrypt_str
@@ -195,10 +196,10 @@ class AppointmentSerializer(serializers.ModelSerializer):
     def validate_scheduled_for(self, value):
         """Validate scheduling rules.
 
-        Rules (UTC-based):
+        Rules (PHT-based):
         - No weekend appointments
         - Exactly on the hour (minutes/seconds must be 0)
-        - Allowed hours: 07:00 through 16:00 inclusive
+        - Allowed hours: 07:00 through 16:00 inclusive (clinic hours)
         """
         if not value:
             return value
@@ -207,23 +208,25 @@ class AppointmentSerializer(serializers.ModelSerializer):
         if timezone.is_naive(dt):
             dt = timezone.make_aware(dt, timezone=timezone.utc)
 
-        dt_utc = dt.astimezone(timezone.utc)
-        if dt_utc.weekday() in (5, 6):  # Sat/Sun
+        manila = ZoneInfo("Asia/Manila")
+        dt_local = dt.astimezone(manila)
+
+        if dt_local.weekday() in (5, 6):  # Sat/Sun
             raise serializers.ValidationError(
                 "Appointments cannot be scheduled on Saturday or Sunday."
             )
 
-        # Only allow 07:00 through 16:00 UTC (hourly).
-        h = dt_utc.hour
-        m = dt_utc.minute
-        s = dt_utc.second
+        # Only allow 07:00 through 16:00 PHT (hourly).
+        h = dt_local.hour
+        m = dt_local.minute
+        s = dt_local.second
         if s != 0 or m != 0:
             raise serializers.ValidationError(
-                "Appointments must be scheduled on the hour between 07:00 and 16:00 UTC."
+                "Appointments must be scheduled on the hour between 07:00 and 16:00 PHT."
             )
         if h < 7 or h > 16:
             raise serializers.ValidationError(
-                "Appointments must be scheduled between 07:00 and 16:00 UTC."
+                "Appointments must be scheduled between 07:00 and 16:00 PHT."
             )
 
         return value
@@ -234,7 +237,7 @@ class AppointmentSerializer(serializers.ModelSerializer):
             return attrs
 
         # Staff hourly capacity enforcement when confirming.
-        # Max 5 confirmed appointments per hour (UTC).
+        # Max 5 confirmed appointments per hour (PHT).
         #
         # This is enforced here because this is the narrow point where status
         # changes to CONFIRMED.
@@ -246,9 +249,12 @@ class AppointmentSerializer(serializers.ModelSerializer):
             dt = resulting_scheduled_for
             if timezone.is_naive(dt):
                 dt = timezone.make_aware(dt, timezone=timezone.utc)
-            dt_utc = dt.astimezone(timezone.utc)
-            start = dt_utc.replace(minute=0, second=0, microsecond=0)
-            end = start + timedelta(hours=1)
+            manila = ZoneInfo("Asia/Manila")
+            dt_local = dt.astimezone(manila)
+            start_local = dt_local.replace(minute=0, second=0, microsecond=0)
+            end_local = start_local + timedelta(hours=1)
+            start = start_local.astimezone(timezone.utc)
+            end = end_local.astimezone(timezone.utc)
             qs = Appointment.objects.filter(
                 status=Appointment.Status.CONFIRMED,
                 scheduled_for__gte=start,

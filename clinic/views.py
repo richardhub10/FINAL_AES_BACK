@@ -15,6 +15,7 @@ Appointments contain sensitive fields (reason/notes). Those fields are:
 
 from django.contrib.auth import get_user_model
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 
 from rest_framework import mixins, permissions, viewsets
 from rest_framework.decorators import action
@@ -96,12 +97,15 @@ def availability(request):
 	if end_date < start_date:
 		return Response({"detail": "'end' must be on or after 'start'."}, status=400)
 
-	# Use UTC boundaries since the app schedules/validates in UTC.
-	start_dt = timezone.make_aware(datetime.combine(start_date, datetime.min.time()), timezone=timezone.utc)
-	end_dt_exclusive = timezone.make_aware(
+	# Interpret start/end as Philippines dates and convert to UTC boundaries.
+	manila = ZoneInfo("Asia/Manila")
+	start_local = timezone.make_aware(datetime.combine(start_date, datetime.min.time()), timezone=manila)
+	end_local_exclusive = timezone.make_aware(
 		datetime.combine(end_date + timedelta(days=1), datetime.min.time()),
-		timezone=timezone.utc,
+		timezone=manila,
 	)
+	start_dt = start_local.astimezone(timezone.utc)
+	end_dt_exclusive = end_local_exclusive.astimezone(timezone.utc)
 
 	qs = Appointment.objects.filter(
 		status=Appointment.Status.CONFIRMED,
@@ -114,12 +118,12 @@ def availability(request):
 	for scheduled_for in qs.values_list("scheduled_for", flat=True):
 		if not scheduled_for:
 			continue
-		dt_utc = scheduled_for
-		if timezone.is_naive(dt_utc):
-			dt_utc = timezone.make_aware(dt_utc, timezone=timezone.utc)
-		dt_utc = dt_utc.astimezone(timezone.utc)
-		ymd = dt_utc.strftime("%Y-%m-%d")
-		hhmm = dt_utc.strftime("%H:%M")
+		dt_val = scheduled_for
+		if timezone.is_naive(dt_val):
+			dt_val = timezone.make_aware(dt_val, timezone=timezone.utc)
+		dt_local = dt_val.astimezone(manila)
+		ymd = dt_local.strftime("%Y-%m-%d")
+		hhmm = dt_local.strftime("%H:%M")
 		slot_key = f"{ymd} {hhmm}"
 		confirmed_by_date[ymd] = int(confirmed_by_date.get(ymd, 0)) + 1
 		confirmed_by_slot[slot_key] = int(confirmed_by_slot.get(slot_key, 0)) + 1
